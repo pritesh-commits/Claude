@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A murmuration of 500 starlings</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;background:#0b0f1a;overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+  #hud{position:fixed;left:14px;bottom:10px;font:12px/1.4 system-ui,sans-serif;color:#9fb0cc;opacity:.7;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">500 starlings · move the pointer to place a falcon · click to scatter</div>
+<script>
+(() => {
+  const N = 500;
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  let W, H, DPR;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2);
+    W = cv.width = innerWidth * DPR;
+    H = cv.height = innerHeight * DPR;
+    sky = null;
+  }
+  let sky = null;
+  addEventListener('resize', resize);
+  resize();
+
+  // Tuning (units: CSS pixels; scaled by S)
+  const S = () => Math.min(W, H) / 900 * DPR;
+  const K = 7;                 // topological neighbours (real starlings track ~6-7)
+  const VIS = 70;              // neighbour search radius
+  const MAXSPD = 4.2, MINSPD = 2.4;
+  const MAXF = 0.12;
+
+  const birds = [];
+  for (let i = 0; i < N; i++) {
+    const a = Math.random() * Math.PI * 2, r = Math.random() * 120;
+    birds.push({
+      x: W / 2 + Math.cos(a) * r * S(), y: H / 2 + Math.sin(a) * r * S(),
+      vx: Math.cos(a + 1.5) * 3, vy: Math.sin(a + 1.5) * 3,
+      ph: Math.random() * 6.28, fr: 0.28 + Math.random() * 0.08,
+      sz: 0.8 + Math.random() * 0.4
+    });
+  }
+
+  // Roost: a wandering target the flock is loosely drawn toward
+  let t = 0;
+  const roost = { x: W / 2, y: H / 2 };
+  // Falcon
+  const falcon = { x: 0, y: 0, vx: 0, vy: 0, on: false, until: 0, user: false };
+  let ptr = null;
+  cv.addEventListener('pointermove', e => { ptr = { x: e.clientX * DPR, y: e.clientY * DPR }; });
+  cv.addEventListener('pointerleave', () => { ptr = null; });
+  cv.addEventListener('pointerdown', e => {
+    const px = e.clientX * DPR, py = e.clientY * DPR;
+    for (const b of birds) {
+      const dx = b.x - px, dy = b.y - py, d = Math.hypot(dx, dy) || 1;
+      if (d < 300 * S()) { b.vx += dx / d * 3; b.vy += dy / d * 3; }
+    }
+  });
+
+  // Spatial grid for neighbour lookup
+  const CELL = VIS;
+  function buildGrid() {
+    const cs = CELL * S();
+    const cols = Math.ceil(W / cs) + 2, rows = Math.ceil(H / cs) + 2;
+    const cells = new Array(cols * rows);
+    for (const b of birds) {
+      const cx = Math.max(0, Math.min(cols - 1, (b.x / cs | 0) + 1));
+      const cy = Math.max(0, Math.min(rows - 1, (b.y / cs | 0) + 1));
+      const k = cy * cols + cx;
+      (cells[k] || (cells[k] = [])).push(b);
+      b.cx = cx; b.cy = cy;
+    }
+    return { cells, cols, rows, cs };
+  }
+
+  const cand = [];
+  function step() {
+    t += 1;
+    const s = S();
+    // Roost wanders on a slow Lissajous path
+    roost.x = W / 2 + Math.sin(t * 0.0021) * W * 0.28 + Math.sin(t * 0.0057) * W * 0.06;
+    roost.y = H / 2 + Math.cos(t * 0.0016) * H * 0.2 + Math.sin(t * 0.0043) * H * 0.05;
+
+    // Falcon: user-controlled if pointer present, otherwise an occasional stoop
+    if (ptr) {
+      falcon.on = true; falcon.x = ptr.x; falcon.y = ptr.y; falcon.user = true;
+    } else {
+      if (falcon.user) { falcon.on = false; falcon.user = false; }
+      if (!falcon.on && Math.random() < 0.0025) {
+        const side = Math.random() * 4 | 0;
+        falcon.x = side === 0 ? -50 : side === 1 ? W + 50 : Math.random() * W;
+        falcon.y = side === 2 ? -50 : side === 3 ? H + 50 : Math.random() * H;
+        falcon.vx = falcon.vy = 0; falcon.on = true; falcon.until = t + 420;
+      }
+      if (falcon.on) {
+        // chase the flock centre
+        let cx = 0, cy = 0;
+        for (const b of birds) { cx += b.x; cy += b.y; }
+        cx /= N; cy /= N;
+        const dx = cx - falcon.x, dy = cy - falcon.y, d = Math.hypot(dx, dy) || 1;
+        falcon.vx += dx / d * 0.1; falcon.vy += dy / d * 0.1;
+        const sp = Math.hypot(falcon.vx, falcon.vy), mx = 5.2 * s;
+        if (sp > mx) { falcon.vx *= mx / sp; falcon.vy *= mx / sp; }
+        falcon.x += falcon.vx; falcon.y += falcon.vy;
+        if (t > falcon.until) falcon.on = false;
+      }
+    }
+
+    const g = buildGrid();
+    const vis = VIS * s, vis2 = vis * vis;
+    const sepR = 14 * s, sepR2 = sepR * sepR;
+
+    for (const b of birds) {
+      cand.length = 0;
+      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) {
+        const x = b.cx + ox, y = b.cy + oy;
+        if (x < 0 || y < 0 || x >= g.cols || y >= g.rows) continue;
+        const c = g.cells[y * g.cols + x];
+        if (!c) continue;
+        for (const o of c) {
+          if (o === b) continue;
+          const dx = o.x - b.x, dy = o.y - b.y, d2 = dx * dx + dy * dy;
+          if (d2 < vis2) { o.d2 = d2; cand.push(o); }
+        }
+      }
+      // Topological: keep the K nearest only
+      if (cand.length > K) { cand.sort((p, q) => p.d2 - q.d2); cand.length = K; }
+
+      let ax = 0, ay = 0, cxs = 0, cys = 0, sx = 0, sy = 0;
+      const n = cand.length;
+      for (const o of cand) {
+        ax += o.vx; ay += o.vy; cxs += o.x; cys += o.y;
+        if (o.d2 < sepR2) {
+          const d = Math.sqrt(o.d2) || 1;
+          sx -= (o.x - b.x) / d * (1 - d / sepR);
+          sy -= (o.y - b.y) / d * (1 - d / sepR);
+        }
+      }
+      let fx = 0, fy = 0;
+      if (n) {
+        // alignment
+        fx += (ax / n - b.vx) * 0.09; fy += (ay / n - b.vy) * 0.09;
+        // cohesion
+        fx += (cxs / n - b.x) * 0.0016 / s; fy += (cys / n - b.y) * 0.0016 / s;
+        // separation
+        fx += sx * 0.5; fy += sy * 0.5;
+      }
+      // roost attraction (weak, grows with distance)
+      const rx = roost.x - b.x, ry = roost.y - b.y, rd = Math.hypot(rx, ry) || 1;
+      const pull = Math.min(rd / (W * 0.4), 1) * 0.045;
+      fx += rx / rd * pull; fy += ry / rd * pull;
+
+      // falcon avoidance — strong, wide, so the flock ripples away
+      if (falcon.on) {
+        const dx = b.x - falcon.x, dy = b.y - falcon.y, d = Math.hypot(dx, dy) || 1;
+        const R = 220 * s;
+        if (d < R) {
+          const k = (1 - d / R);
+          fx += dx / d * k * k * 0.9; fy += dy / d * k * k * 0.9;
+        }
+      }
+
+      // soft walls: turn back in rather than bounce
+      const m = 90 * s;
+      if (b.x < m) fx += (m - b.x) / m * 0.12; else if (b.x > W - m) fx -= (b.x - (W - m)) / m * 0.12;
+      if (b.y < m) fy += (m - b.y) / m * 0.12; else if (b.y > H - m) fy -= (b.y - (H - m)) / m * 0.12;
+
+      // tiny noise keeps the murmuration from freezing into a rigid shape
+      fx += (Math.random() - 0.5) * 0.03; fy += (Math.random() - 0.5) * 0.03;
+
+      const fm = Math.hypot(fx, fy);
+      if (fm > MAXF) { fx *= MAXF / fm; fy *= MAXF / fm; }
+      b.vx += fx; b.vy += fy;
+    }
+
+    for (const b of birds) {
+      let sp = Math.hypot(b.vx, b.vy) || 1;
+      const lo = MINSPD, hi = MAXSPD;
+      const c = Math.max(lo, Math.min(hi, sp));
+      b.vx *= c / sp; b.vy *= c / sp;
+      b.x += b.vx * s; b.y += b.vy * s;
+      b.ph += b.fr;
+    }
+  }
+
+  function drawSky() {
+    if (!sky) {
+      sky = document.createElement('canvas'); sky.width = W; sky.height = H;
+      const c = sky.getContext('2d');
+      const g = c.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, '#1d2b4a'); g.addColorStop(0.45, '#7a5a78');
+      g.addColorStop(0.75, '#e0906a'); g.addColorStop(1, '#f5c27a');
+      c.fillStyle = g; c.fillRect(0, 0, W, H);
+      // low sun glow
+      const r = c.createRadialGradient(W * 0.7, H, 0, W * 0.7, H, H * 0.7);
+      r.addColorStop(0, 'rgba(255,220,150,.55)'); r.addColorStop(1, 'rgba(255,220,150,0)');
+      c.fillStyle = r; c.fillRect(0, 0, W, H);
+      // faint cloud streaks
+      for (let i = 0; i < 14; i++) {
+        const y = H * (0.25 + Math.random() * 0.55), x = Math.random() * W;
+        const w = W * (0.15 + Math.random() * 0.3), h = 6 * DPR + Math.random() * 14 * DPR;
+        const cg = c.createLinearGradient(x, 0, x + w, 0);
+        cg.addColorStop(0, 'rgba(60,40,70,0)'); cg.addColorStop(.5, 'rgba(60,40,70,.18)'); cg.addColorStop(1, 'rgba(60,40,70,0)');
+        c.fillStyle = cg; c.fillRect(x, y, w, h);
+      }
+    }
+    ctx.drawImage(sky, 0, 0);
+  }
+
+  function drawBird(b, s) {
+    const ang = Math.atan2(b.vy, b.vx);
+    const flap = Math.sin(b.ph);
+    const L = 5.2 * s * b.sz;           // half body length
+    const wing = (4.2 + flap * 3.2) * s * b.sz;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    // body points: head, tail; wings span perpendicular
+    const hx = b.x + ca * L, hy = b.y + sa * L;
+    const tx = b.x - ca * L * 0.9, ty = b.y - sa * L * 0.9;
+    const px = -sa, py = ca;
+    // wings swept back; flap changes span and sweep
+    const sweep = 0.2 + (1 - flap) * 0.15;
+    const w1x = b.x + px * wing - ca * L * sweep, w1y = b.y + py * wing - sa * L * sweep;
+    const w2x = b.x - px * wing - ca * L * sweep, w2y = b.y - py * wing - sa * L * sweep;
+    ctx.moveTo(hx, hy); ctx.lineTo(w1x, w1y); ctx.lineTo(tx, ty); ctx.lineTo(w2x, w2y); ctx.closePath();
+  }
+
+  function frame() {
+    step();
+    drawSky();
+    const s = S();
+    // soft haze beneath for depth, then crisp silhouettes
+    ctx.fillStyle = 'rgba(12,10,24,0.92)';
+    ctx.beginPath();
+    for (const b of birds) drawBird(b, s);
+    ctx.fill();
+    // ground silhouette
+    const gh = H * 0.07;
+    ctx.fillStyle = '#0c0a16';
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W; x += 20 * DPR) {
+      ctx.lineTo(x, H - gh * (0.5 + 0.5 * Math.sin(x * 0.004 / DPR + 1) * Math.cos(x * 0.0017 / DPR)));
+    }
+    ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+</script>
+</body>
+</html>
