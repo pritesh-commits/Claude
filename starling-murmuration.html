@@ -21,13 +21,16 @@
   let W, H, DPR;
   function resize() {
     DPR = Math.min(devicePixelRatio || 1, 2);
-    W = cv.width = innerWidth * DPR;
-    H = cv.height = innerHeight * DPR;
+    const cw = cv.clientWidth || innerWidth || document.documentElement.clientWidth || 800;
+    const ch = cv.clientHeight || innerHeight || document.documentElement.clientHeight || 600;
+    W = cv.width = Math.max(1, Math.round(cw * DPR));
+    H = cv.height = Math.max(1, Math.round(ch * DPR));
     sky = null;
+    if (typeof birds !== 'undefined' && birds.some(b => !isFinite(b.x + b.y + b.vx + b.vy))) seed();
   }
   let sky = null;
   addEventListener('resize', resize);
-  resize();
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(cv);
 
   // Tuning (units: CSS pixels; scaled by S)
   const S = () => Math.min(W, H) / 900 * DPR;
@@ -37,6 +40,8 @@
   const MAXF = 0.2;
 
   const birds = [];
+  function seed() {
+  birds.length = 0;
   for (let i = 0; i < N; i++) {
     const a = Math.random() * Math.PI * 2, r = Math.random() * 120;
     birds.push({
@@ -46,6 +51,9 @@
       sz: 0.8 + Math.random() * 0.4, ang: 0, ca: 1, sa: 0
     });
   }
+  }
+  resize();
+  seed();
 
   // Roost: a wandering target the flock is loosely drawn toward
   let t = 0;
